@@ -11,14 +11,15 @@ def Z():
 	cog.out('>@@>')
 def TAB():
 	cog.out('<TABHERE>')
-
+from parseSMDSL import *
 from parseCDSL import *
+from parseIDSL import *
 component = CDSLParsing.fromFile(theCDSL)
+sm = SMDSLparsing.fromFile(component['statemachine'])
 if component == None:
 	print('Can\'t locate', theCDSLs)
 	sys.exit(1)
 
-from parseIDSL import *
 pool = IDSLPool(theIDSLs)
 
 
@@ -67,29 +68,131 @@ else:
 ]]]
 [[[end]]]
 {
+
+[[[cog
+if component['statemachine'] != 'none':
+    codaddTransition = ""
+    codaddState = ""
+    codConnect = ""
+    codsetInitialState = ""
+    states = ""
+    if sm['machine']['contents']['transition'] != "none":
+        for transi in sm['machine']['contents']['transition']:
+            for dest in transi['dest']:
+                codaddTransition += "<TABHERE>" + transi['src'] + "->addTransition(" + "this, SIGNAL("+transi['src'] + "to" + dest+"()), " + dest + ");\n"
+    if sm['substates'] != "none":
+        for substates in sm['substates']:
+            if substates['contents']['transition'] != "none":
+                for transi in substates['contents']['transition']:
+                    for dest in transi['dest']:
+                        codaddTransition += "<TABHERE>" + transi['src'] + "->addTransition(" + "this, SIGNAL("+transi['src'] + "to" + dest+"()), " + dest + ");\n"
+    if sm['machine']['contents']['states'] is not "none":
+        for state in sm['machine']['contents']['states']:
+            codaddState += "<TABHERE>" + sm['machine']['name'] +  ".addState(" + state + ");\n"
+            codConnect += "<TABHERE>QObject::connect(" + state + ", SIGNAL(entered()), this, SLOT(fun_" + state + "()));\n"
+            states += state + ","
+    if sm['machine']['contents']['initialstate'][0] is not "none":
+        state = sm['machine']['contents']['initialstate'][0]
+        codaddState += "<TABHERE>" + sm['machine']['name'] +  ".addState(" + state + ");\n"
+        codsetInitialState += "<TABHERE>" + sm['machine']['name'] +  ".setInitialState(" + state +");\n"
+        codConnect += "<TABHERE>QObject::connect(" + state + ", SIGNAL(entered()), this, SLOT(fun_" + state + "()));\n"
+        states += state + ","
+    if sm['machine']['contents']['finalstate'] is not "none":
+        state = sm['machine']['contents']['finalstate'][0]
+        codaddState += "<TABHERE>" + sm['machine']['name'] +  ".addState(" + state + ");\n"
+        codConnect += "<TABHERE>QObject::connect(" + state + ", SIGNAL(entered()), this, SLOT(fun_" + state + "()));\n"
+        states += state + ","
+
+    if sm['substates'] != "none":
+        for substates in sm['substates']:
+            if substates['contents']['initialstate'] is not "none":
+                state = substates['contents']['initialstate']
+                codsetInitialState += "<TABHERE>" + substates['parent'] +  "->setInitialState(" + state +");\n"
+                codConnect += "<TABHERE>QObject::connect(" + state + ", SIGNAL(entered()), this, SLOT(fun_" + state + "()));\n"
+                states += state + ","
+            if substates['contents']['finalstate'] is not "none":
+                state = substates['contents']['finalstate']
+                codConnect += "<TABHERE>QObject::connect(" + state + ", SIGNAL(entered()), this, SLOT(fun_" + state + "()));\n"
+                states += state + ","
+            if substates['contents']['states'] is not "none":
+                for state in substates['contents']['states']:
+                    codConnect += "<TABHERE>QObject::connect(" + state + ", SIGNAL(entered()), this, SLOT(fun_" + state + "()));\n"
+                    states += state + ","
+    cog.outl("//Initialization State machine")
+    cog.outl(codaddTransition)
+    cog.outl(codaddState)
+    cog.outl(codsetInitialState)
+    cog.outl(codConnect)
+    cog.outl("//------------------")
+]]]
+[[[end]]]
 [[[cog
 for namea, num in getNameNumber(component['requires']):
 	if type(namea) == str:
 		name = namea
 	else:
 		name = namea[0]
-	cog.outl("<TABHERE>"+name.lower()+num+"_proxy = (*("+name+"Prx*)mprx[\""+name+"Proxy"+num+"\"]);")	
-]]]
-[[[end]]]
+	if communicationIsIce(namea):
+		cog.outl("<TABHERE>"+name.lower()+num+"_proxy = (*("+name+"Prx*)mprx[\""+name+"Proxy"+num+"\"]);")
 
-[[[cog
 for namea, num in getNameNumber(component['publishes']):
 	if type(namea) == str:
 		name = namea
 	else:
 		name = namea[0]
-	cog.outl("<TABHERE>"+name.lower()+num+"_proxy = (*("+name+"Prx*)mprx[\""+name+"Pub"+num+"\"]);")
+	if communicationIsIce(namea):
+		cog.outl("<TABHERE>"+name.lower()+num+"_proxy = (*("+name+"Prx*)mprx[\""+name+"Pub"+num+"\"]);")
 ]]]
 [[[end]]]
 
 	mutex = new QMutex(QMutex::Recursive);
 
 [[[cog
+if component['usingROS'] == True:
+	#INICIALIZANDO SUBSCRIBERS
+	for imp in component['subscribesTo']:
+		nname = imp
+		while type(nname) != type(''):
+			nname = nname[0]
+		module = pool.moduleProviding(nname)
+		if module == None:
+			print ('\nCan\'t find module providing', nname, '\n')
+			sys.exit(-1)
+		if not communicationIsIce(imp):
+			for interface in module['interfaces']:
+				if interface['name'] == nname:
+					for mname in interface['methods']:
+						s = "\""+nname+"_"+mname+"\""
+						cog.outl("<TABHERE>"+nname+"_"+mname+" = node.subscribe("+s+", 1000, &GenericWorker::"+mname+", this);")
+	#INICIALIZANDO IMPLEMENTS
+	for imp in component['implements']:
+		nname = imp
+		while type(nname) != type(''):
+			nname = nname[0]
+		module = pool.moduleProviding(nname)
+		if module == None:
+			print ('\nCan\'t find module providing', nname, '\n')
+			sys.exit(-1)
+		if not communicationIsIce(imp):
+			for interface in module['interfaces']:
+				if interface['name'] == nname:
+					for mname in interface['methods']:
+						s = "\""+nname+"_"+mname+"\""
+						cog.outl("<TABHERE>"+nname+"_"+mname+" = node.advertiseService("+s+", &GenericWorker::"+mname+", this);")
+if 'publishes' in component:
+	for publish in component['publishes']:
+		pubs = publish
+		while type(pubs) != type(''):
+			pubs = pubs[0]
+		if not communicationIsIce(publish):
+			cog.outl("<TABHERE>"+pubs.lower()+"_proxy = new Publisher"+pubs+"(&node);")
+if 'requires' in component:
+	for require in component['requires']:
+		req = require
+		while type(req) != type(''):
+			req = req[0]
+		if not communicationIsIce(require):
+			cog.outl("<TABHERE>"+req.lower()+"_proxy = new ServiceClient"+req+"(&node);")
 if component['gui'] != 'none':
 	cog.outl("""<TABHERE>#ifdef USE_QTGUI
 		setupUi(this);
@@ -98,7 +201,11 @@ if component['gui'] != 'none':
 ]]]
 [[[end]]]
 	Period = BASIC_PERIOD;
-	connect(&timer, SIGNAL(timeout()), this, SLOT(compute()));
+[[[cog
+if component['statemachine'] is 'none':
+	cog.outl("connect(&timer, SIGNAL(timeout()), this, SLOT(compute()));")
+]]]
+[[[end]]]
 // 	timer.start(Period);
 }
 
